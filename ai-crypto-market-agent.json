@@ -1,0 +1,447 @@
+{
+  "name": "AI Crypto Market Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "a1",
+      "name": "Toutes les 2h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "ticker",
+        "coinId": "bitcoin",
+        "limit": 50,
+        "options": {
+          "order": "trust_score_desc"
+        }
+      },
+      "id": "a2",
+      "name": "Prix BTC par plateforme",
+      "type": "n8n-nodes-base.coinGecko",
+      "typeVersion": 1,
+      "position": [
+        220,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "market",
+        "baseCurrency": "usd",
+        "limit": 10,
+        "options": {
+          "price_change_percentage": [
+            "1h",
+            "24h",
+            "7d"
+          ]
+        }
+      },
+      "id": "a3",
+      "name": "Marché top 10",
+      "type": "n8n-nodes-base.coinGecko",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "options": {}
+      },
+      "id": "a4",
+      "name": "Actus CoinDesk",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "url": "https://cointelegraph.com/rss",
+        "options": {}
+      },
+      "id": "a5",
+      "name": "Actus Cointelegraph",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1) Exchanges: keep valid tickers, prefer \"green\" trust score when available\nconst tous = $('Prix BTC par plateforme').all().map(i => i.json)\n  .filter(t => !t.is_stale && !t.is_anomaly && t.converted_last?.usd)\n  .map(t => ({\n    plateforme: t.market?.name,\n    paire: `${t.base}/${t.target}`,\n    prix_usd: t.converted_last.usd,\n    volume_usd: Math.round(t.converted_volume?.usd || 0),\n    spread_pct: t.bid_ask_spread_percentage,\n    confiance: t.trust_score || 'inconnue'\n  }));\nconst verts = tous.filter(t => t.confiance === 'green');\nconst tickers = (verts.length ? verts : tous)\n  .sort((a, b) => ((a.spread_pct ?? 99) - (b.spread_pct ?? 99)) || (b.volume_usd - a.volume_usd))\n  .slice(0, 10);\n\n// 2) Market context\nconst marche = $('Marché top 10').all().map(i => i.json).map(c => ({\n  coin: c.symbol?.toUpperCase(),\n  prix: c.current_price,\n  var_1h: c.price_change_percentage_1h_in_currency?.toFixed(2),\n  var_24h: c.price_change_percentage_24h_in_currency?.toFixed(2),\n  var_7j: c.price_change_percentage_7d_in_currency?.toFixed(2)\n}));\n\n// 3) News from the last 12 hours\nconst limite = Date.now() - 12 * 3600 * 1000;\nconst actus = [...$('Actus CoinDesk').all(), ...$('Actus Cointelegraph').all()]\n  .map(i => i.json)\n  .filter(a => new Date(a.isoDate || a.pubDate).getTime() > limite)\n  .slice(0, 20)\n  .map(a => `- ${a.title} (${a.link})`);\n\nreturn [{ json: {\n  plateformes: JSON.stringify(tickers, null, 1),\n  marche: JSON.stringify(marche, null, 1),\n  actus: actus.join('\\n') || 'Aucune actu récente'\n} }];"
+      },
+      "id": "a6",
+      "name": "Préparer les données",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Données du {{ $now.toFormat('dd/MM/yyyy HH:mm') }} :\n\nPLATEFORMES (BTC, triées par spread, confiance verte) :\n{{ $json.plateformes }}\n\nMARCHÉ TOP 10 :\n{{ $json.marche }}\n\nACTUALITÉS (12 dernières heures) :\n{{ $json.actus }}",
+        "hasOutputParser": false,
+        "options": {
+          "systemMessage": "Tu es un analyste de marché crypto. Tu écris en français, court et clair (max 250 mots), pour un message Telegram.\n\nFormat :\n1. 🏦 Plateforme : la meilleure plateforme maintenant pour BTC (plus petit spread + bon volume + confiance verte) et pourquoi, en 1-2 lignes. Compare avec la 2e.\n2. 📊 Marché : tendance générale (haussière / baissière / indécise) d'après les variations 1h/24h/7j.\n3. 📰 Actus : les 2-3 news qui peuvent bouger le marché, avec leur impact probable (positif / négatif / neutre).\n4. ⏱️ Moment : dis si les conditions sont plutôt calmes, volatiles ou risquées en ce moment. Ne donne JAMAIS d'ordre d'achat/vente ni de prix cible.\n5. ⚠️ Termine par : « Analyse automatique, pas un conseil financier. »\n\nN'invente aucun chiffre : utilise seulement les données fournies."
+        }
+      },
+      "id": "a7",
+      "name": "Agent IA analyste",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.8-flash",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "a8",
+      "name": "Gemini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.output }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a9",
+      "name": "Envoyer sur Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Garde la dernière analyse en mémoire pour l'application\nconst sd = $getWorkflowStaticData('global');\nconst prep = $('Préparer les données').first().json;\nlet plateformes = [], marche = [];\ntry { plateformes = JSON.parse(prep.plateformes); } catch (e) {}\ntry { marche = JSON.parse(prep.marche); } catch (e) {}\nsd.derniere = {\n  date: new Date().toISOString(),\n  analyse: $json.output,\n  plateformes: plateformes.slice(0, 5),\n  marche\n};\nreturn $input.all();"
+      },
+      "name": "Sauvegarder pour l'app",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        0
+      ],
+      "id": "Sauvegarder pour l'app"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prépare un message pour chaque abonné\nconst sd = $getWorkflowStaticData('global');\nconst abonnes = sd.abonnes && sd.abonnes.length ? sd.abonnes : ['YOUR_TELEGRAM_CHAT_ID'];\nconst output = $json.output;\nreturn abonnes.map(chatId => ({ json: { chatId, output } }));"
+      },
+      "name": "Préparer l'envoi aux abonnés",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        0
+      ],
+      "id": "Préparer l'envoi aux abonnés"
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "farah-crypto",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "App – ouverture",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        480
+      ],
+      "webhookId": "7c1e2b9a-4f3d-4c6e-9a1b-2d8f5e0c3a71",
+      "id": "App – ouverture"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Construit la page de l'application à partir de la dernière analyse\nconst d = $getWorkflowStaticData('global').derniere;\nconst esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst fmt = s => esc(s).replace(/\\*\\*(.+?)\\*\\*/g,'<b>$1</b>').replace(/\\n/g,'<br>');\nconst num = (n, dec = 2) => n == null ? '–' : Number(n).toLocaleString('fr-FR', { maximumFractionDigits: dec });\nconst couleur = v => v == null ? '' : (Number(v) >= 0 ? 'up' : 'down');\n\nlet contenu;\nif (!d) {\n  contenu = `<div class=\"card\"><h2>⏳ Première analyse en préparation</h2><p>L'agent publie une nouvelle analyse toutes les 2 heures. Revenez un peu plus tard.</p></div>`;\n} else {\n  const date = new Date(d.date).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'medium', timeStyle: 'short' });\n  const lignesPlat = (d.plateformes || []).map((p, i) => `\n    <tr><td>${i + 1}. ${esc(p.plateforme)}</td><td>${esc(p.paire)}</td>\n    <td class=\"r\">${num(p.prix_usd, 0)} $</td><td class=\"r\">${num(p.spread_pct, 3)} %</td></tr>`).join('');\n  const lignesMarche = (d.marche || []).map(c => `\n    <tr><td><b>${esc(c.coin)}</b></td><td class=\"r\">${num(c.prix)} $</td>\n    <td class=\"r ${couleur(c.var_24h)}\">${c.var_24h ?? '–'} %</td>\n    <td class=\"r ${couleur(c.var_7j)}\">${c.var_7j ?? '–'} %</td></tr>`).join('');\n  contenu = `\n    <p class=\"maj\">Mise à jour : ${date}</p>\n    <div class=\"card\"><h2>🧠 Analyse de l'agent</h2><div class=\"analyse\">${fmt(d.analyse)}</div></div>\n    <div class=\"card\"><h2>🏦 Plateformes BTC (plus petit écart d'abord)</h2>\n      <table><tr><th>Plateforme</th><th>Paire</th><th class=\"r\">Prix</th><th class=\"r\">Spread</th></tr>${lignesPlat}</table></div>\n    <div class=\"card\"><h2>📊 Marché – Top 10</h2>\n      <table><tr><th>Crypto</th><th class=\"r\">Prix</th><th class=\"r\">24h</th><th class=\"r\">7j</th></tr>${lignesMarche}</table></div>`;\n}\n\nconst html = `<!doctype html>\n<html lang=\"fr\"><head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\n<meta name=\"mobile-web-app-capable\" content=\"yes\">\n<meta name=\"apple-mobile-web-app-title\" content=\"Farah Crypto\">\n<meta name=\"theme-color\" content=\"#0f1420\">\n<title>Farah Crypto</title>\n<style>\n  :root { --bg:#0f1420; --card:#181f2e; --txt:#e8ecf3; --muted:#8a94a8; --line:#262f42; --up:#2ecc8f; --down:#ff6b6b; --accent:#f5b942; }\n  * { box-sizing:border-box; }\n  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.5 -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif; }\n  header { padding:22px 16px 6px; max-width:720px; margin:auto; }\n  h1 { margin:0; font-size:24px; } h1 span { color:var(--accent); }\n  .sous { color:var(--muted); margin:2px 0 0; font-size:13px; }\n  main { padding:8px 16px 32px; max-width:720px; margin:auto; }\n  .maj { color:var(--muted); font-size:13px; margin:4px 0 12px; }\n  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:14px; }\n  h2 { font-size:16px; margin:0 0 10px; }\n  .analyse { font-size:15px; }\n  table { width:100%; border-collapse:collapse; font-size:14px; }\n  th { text-align:left; color:var(--muted); font-weight:500; font-size:12px; padding:4px 4px 6px; border-bottom:1px solid var(--line); }\n  td { padding:7px 4px; border-bottom:1px solid var(--line); }\n  tr:last-child td { border-bottom:none; }\n  .r { text-align:right; } .up { color:var(--up); } .down { color:var(--down); }\n  .btn { display:block; text-align:center; background:var(--accent); color:#111; font-weight:600; text-decoration:none; padding:12px; border-radius:12px; margin:6px 0 14px; }\n  footer { color:var(--muted); font-size:12px; text-align:center; padding:0 16px 28px; max-width:720px; margin:auto; }\n</style></head>\n<body>\n<header><h1>Farah <span>Crypto</span></h1><p class=\"sous\">Veille crypto automatique par IA · toutes les 2h</p></header>\n<main>\n  <a class=\"btn\" href=\"\">🔄 Actualiser</a>\n  ${contenu}\n</main>\n<footer>⚠️ Analyse générée automatiquement à partir de données publiques (CoinGecko, CoinDesk, Cointelegraph). Ce n'est pas un conseil financier.</footer>\n</body></html>`;\n\nreturn [{ json: { html } }];"
+      },
+      "name": "Construire la page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        480
+      ],
+      "id": "Construire la page"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Afficher la page",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        480
+      ],
+      "id": "Afficher la page"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "name": "Bot – nouveau message",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        800
+      ],
+      "webhookId": "3b6f9d2e-8a41-4c7b-b5e2-91f0c6a7d384",
+      "id": "Bot – nouveau message"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Inscrit / désinscrit les personnes qui écrivent au bot\nconst sd = $getWorkflowStaticData('global');\nsd.abonnes = sd.abonnes || ['YOUR_TELEGRAM_CHAT_ID'];\nconst msg = $json.message || {};\nconst chatId = String(msg.chat?.id || '');\nconst texte = (msg.text || '').trim().toLowerCase();\nlet reponse;\nif (!chatId) return [];\nif (texte.startsWith('/stop')) {\n  sd.abonnes = sd.abonnes.filter(id => id !== chatId);\n  reponse = \"🔕 Tu es désinscrit(e). Envoie /start pour te réabonner.\";\n} else {\n  if (!sd.abonnes.includes(chatId)) sd.abonnes.push(chatId);\n  reponse = \"✅ Bienvenue sur Farah Crypto !\\n\\nTu recevras une analyse du marché crypto toutes les 2 heures.\\n\\nEnvoie /stop pour ne plus recevoir les messages.\\n\\n⚠️ Analyse automatique, pas un conseil financier.\";\n}\nreturn [{ json: { chatId, reponse } }];"
+      },
+      "name": "Inscrire l'abonné",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        800
+      ],
+      "id": "Inscrire l'abonné"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.reponse }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "name": "Répondre à l'abonné",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        800
+      ],
+      "id": "Répondre à l'abonné"
+    }
+  ],
+  "connections": {
+    "Toutes les 2h": {
+      "main": [
+        [
+          {
+            "node": "Prix BTC par plateforme",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prix BTC par plateforme": {
+      "main": [
+        [
+          {
+            "node": "Marché top 10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marché top 10": {
+      "main": [
+        [
+          {
+            "node": "Actus CoinDesk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actus CoinDesk": {
+      "main": [
+        [
+          {
+            "node": "Actus Cointelegraph",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actus Cointelegraph": {
+      "main": [
+        [
+          {
+            "node": "Préparer les données",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer les données": {
+      "main": [
+        [
+          {
+            "node": "Agent IA analyste",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent IA analyste",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent IA analyste": {
+      "main": [
+        [
+          {
+            "node": "Sauvegarder pour l'app",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sauvegarder pour l'app": {
+      "main": [
+        [
+          {
+            "node": "Préparer l'envoi aux abonnés",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Préparer l'envoi aux abonnés": {
+      "main": [
+        [
+          {
+            "node": "Envoyer sur Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "App – ouverture": {
+      "main": [
+        [
+          {
+            "node": "Construire la page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construire la page": {
+      "main": [
+        [
+          {
+            "node": "Afficher la page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bot – nouveau message": {
+      "main": [
+        [
+          {
+            "node": "Inscrire l'abonné",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inscrire l'abonné": {
+      "main": [
+        [
+          {
+            "node": "Répondre à l'abonné",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
